@@ -43,6 +43,18 @@ export function ImageStudio() {
     let useLocalModel = false;
     let selectedLocalModel = LOCAL_IMAGE_MODELS[0]?.id || null;
     let localGenProgress = 0; // 0–1
+    let downloadedModelIds = new Set(); // model IDs with state 'downloaded' from backend
+
+    async function refreshDownloadedModels() {
+        try {
+            const models = await localAI.listModels();
+            downloadedModelIds = new Set(
+                models.filter(m => m.state === 'downloaded').map(m => m.id)
+            );
+        } catch (_) {
+            downloadedModelIds = new Set();
+        }
+    }
 
     // Advanced parameters state
     let negativePrompt = '';
@@ -214,17 +226,24 @@ export function ImageStudio() {
             }
         };
         updateLocalToggleStyle();
-        localToggleBtn.onclick = (e) => {
+        localToggleBtn.onclick = async (e) => {
             e.stopPropagation();
             useLocalModel = !useLocalModel;
-            updateLocalToggleStyle();
-            // Reflect active model in the button label
             if (useLocalModel) {
+                await refreshDownloadedModels();
+                // Auto-select first downloaded model, or fallback to first in catalog
+                const available = LOCAL_IMAGE_MODELS.filter(m =>
+                    m.provider === 'wan2gp' || downloadedModelIds.has(m.id)
+                );
+                if (available.length > 0 && !downloadedModelIds.has(selectedLocalModel)) {
+                    selectedLocalModel = available[0].id;
+                }
                 const lm = getLocalModelById(selectedLocalModel);
                 if (lm) document.getElementById('model-btn-label').textContent = lm.name;
             } else {
                 document.getElementById('model-btn-label').textContent = selectedModelName;
             }
+            updateLocalToggleStyle();
         };
         controlsLeft.appendChild(localToggleBtn);
     }
@@ -734,16 +753,21 @@ export function ImageStudio() {
                 list.innerHTML = '';
 
                 if (useLocalModel) {
-                    // ── Local model list (Wan2GP image-capable models only) ───
+                    // ── Local model list: show downloaded sd.cpp + all Wan2GP ───
                     const filtered = LOCAL_IMAGE_MODELS.filter(m =>
-                        m.name.toLowerCase().includes(filter.toLowerCase()) ||
-                        m.id.toLowerCase().includes(filter.toLowerCase())
+                        (m.provider === 'wan2gp' || downloadedModelIds.has(m.id)) &&
+                        (m.name.toLowerCase().includes(filter.toLowerCase()) ||
+                         m.id.toLowerCase().includes(filter.toLowerCase()))
                     );
                     if (filtered.length === 0) {
-                        list.innerHTML = `<div class="text-xs text-muted text-center py-4">${t('common.noResults')}</div>`;
+                        const hasDownloads = [...downloadedModelIds].some(id => LOCAL_MODEL_CATALOG.find(m => m.id === id));
+                        list.innerHTML = hasDownloads
+                            ? `<div class="text-xs text-muted text-center py-4">${t('common.noResults')}</div>`
+                            : `<div class="text-xs text-muted text-center py-4 px-2">No local models downloaded yet. Go to Settings → Local Models to download one.</div>`;
                         return;
                     }
                     filtered.forEach(m => {
+                        const isDownloaded = m.provider === 'wan2gp' || downloadedModelIds.has(m.id);
                         const item = document.createElement('div');
                         item.className = `flex items-center justify-between p-3.5 hover:bg-white/5 rounded-2xl cursor-pointer transition-all border border-transparent hover:border-white/5 ${selectedLocalModel === m.id ? 'bg-white/5 border-white/5' : ''}`;
                         item.innerHTML = `
@@ -757,8 +781,10 @@ export function ImageStudio() {
                                     <span class="text-[10px] text-muted">${m.type.toUpperCase()} · ${m.family}</span>
                                 </div>
                             </div>
-                            ${selectedLocalModel === m.id ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="4"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
-                        `;
+                            <div class="flex items-center gap-2">
+                                ${m.provider === 'sdcpp' && !isDownloaded ? '<span class="text-[10px] text-yellow-400/70 font-medium">not downloaded</span>' : ''}
+                                ${selectedLocalModel === m.id ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="4"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
+                            </div>`;
                         item.onclick = (e) => {
                             e.stopPropagation();
                             selectedLocalModel = m.id;

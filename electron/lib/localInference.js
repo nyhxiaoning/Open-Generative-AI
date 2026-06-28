@@ -118,7 +118,13 @@ function downloadFile(url, destPath, onProgress) {
                 if (knownTotal && onProgress) onProgress(received / knownTotal);
             });
             res.pipe(out);
-            out.on('finish', () => { fs.renameSync(tmp, destPath); resolve(); });
+            out.on('finish', () => {
+                try { fs.renameSync(tmp, destPath); } catch (e) {
+                    if (fs.existsSync(destPath)) { /* already renamed */ }
+                    else { console.error(`[download] rename failed: ${e.message}`); }
+                }
+                resolve();
+            });
             out.on('error', reject);
             res.on('error', reject);
         });
