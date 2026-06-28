@@ -1,3 +1,14 @@
+// Suppress harmless macOS Input Method Kit console noise (CapsLock LED, IMK run loop)
+// These fire on any text input in Electron apps; not errors, just Apple framework debug spew.
+if (process.platform === 'darwin') {
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (buf) => {
+        const str = buf.toString();
+        if (str.includes('TSM AdjustCapsLockLED') || str.includes('IMKCFRunLoopWakeUpReliable')) return true;
+        return origWrite(buf);
+    };
+}
+
 const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const { register: registerLocalInference } = require('./lib/localInference');

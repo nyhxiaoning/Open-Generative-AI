@@ -4,6 +4,20 @@
 //   - wan2gp: user-run remote Gradio server
 // Mirrors electron/lib/modelCatalog.js (sd.cpp) and electron/lib/wan2gpProvider.js (wan2gp).
 export const LOCAL_MODEL_CATALOG = [
+    // ── sd.cpp: SD 1.5 (small, M2-friendly) ─────────────────────────────────
+    {
+        id: 'dreamshaper-8',
+        name: 'Dreamshaper 8',
+        description: 'Versatile SD 1.5 model — great for portraits, landscapes, and artistic styles.',
+        type: 'sd1',
+        provider: 'sdcpp',
+        filename: 'DreamShaper_8_pruned.safetensors',
+        sizeGB: 2.1,
+        aspectRatios: ['1:1', '4:3', '3:4', '16:9', '9:16'],
+        defaultSteps: 20,
+        defaultGuidance: 7.5,
+        tags: ['photorealistic', 'artistic', 'versatile'],
+    },
     // ── sd.cpp: Z-Image (Tongyi-MAI) ────────────────────────────────────────
     {
         id: 'z-image-turbo',
@@ -32,20 +46,6 @@ export const LOCAL_MODEL_CATALOG = [
         defaultGuidance: 7.5,
         tags: ['high-quality', 'local', 'detailed'],
         featured: true,
-    },
-    // ── sd.cpp: SD 1.5 (small, M2-friendly) ─────────────────────────────────
-    {
-        id: 'dreamshaper-8',
-        name: 'Dreamshaper 8',
-        description: 'Versatile SD 1.5 model — great for portraits, landscapes, and artistic styles.',
-        type: 'sd1',
-        provider: 'sdcpp',
-        filename: 'DreamShaper_8_pruned.safetensors',
-        sizeGB: 2.1,
-        aspectRatios: ['1:1', '4:3', '3:4', '16:9', '9:16'],
-        defaultSteps: 20,
-        defaultGuidance: 7.5,
-        tags: ['photorealistic', 'artistic', 'versatile'],
     },
     {
         id: 'realistic-vision-v51',

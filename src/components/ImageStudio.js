@@ -32,16 +32,15 @@ export function ImageStudio() {
     let selectedModel = defaultModel.id;
     let selectedModelName = defaultModel.name;
     let selectedAr = defaultModel.inputs?.aspect_ratio?.default || '1:1';
-    let dropdownOpen = null;
-    let uploadedImageUrls = []; // array of uploaded image URLs (multi-image support)
-    let imageMode = false; // false = t2i models, true = i2i models
 
-    // Local inference state — only image-capable models surface here.
-    // sd.cpp uses type='sd1'|'sdxl'|'z-image'; Wan2GP image models use type='image'.
-    // Wan2GP video models (type='video') are hidden from ImageStudio.
+    // Default to local model (Dreamshaper) on Electron, remote API on web
     const LOCAL_IMAGE_MODELS = LOCAL_MODEL_CATALOG.filter(m => m.type !== 'video');
-    let useLocalModel = false;
+    let useLocalModel = isLocalAIAvailable();
     let selectedLocalModel = LOCAL_IMAGE_MODELS[0]?.id || null;
+    if (useLocalModel) {
+        const dreamshaper = LOCAL_IMAGE_MODELS.find(m => m.id === 'dreamshaper-8');
+        if (dreamshaper) selectedLocalModel = dreamshaper.id;
+    }
     let localGenProgress = 0; // 0–1
     let downloadedModelIds = new Set(); // model IDs with state 'downloaded' from backend
 
@@ -64,6 +63,9 @@ export function ImageStudio() {
     let showAdvanced = false;
     let selectedStyle = 'None';
     let batchCount = 1;
+    let dropdownOpen = null;
+    let imageMode = false;
+    let uploadedImageUrls = [];
 
     // New advanced controls
     let customWidth = 0;  // 0 means use default (aspect ratio based)
@@ -150,8 +152,12 @@ export function ImageStudio() {
             imageMode = false;
             selectedModel = t2iModels[0].id;
             selectedModelName = t2iModels[0].name;
-            selectedAr = getAspectRatiosForModel(selectedModel)[0];
-            document.getElementById('model-btn-label').textContent = selectedModelName;
+            selectedAr = useLocalModel
+                ? (getLocalModelById(selectedLocalModel)?.aspectRatios?.[0] || '1:1')
+                : getAspectRatiosForModel(selectedModel)[0];
+            document.getElementById('model-btn-label').textContent = useLocalModel
+                ? (getLocalModelById(selectedLocalModel)?.name || selectedModelName)
+                : selectedModelName;
             document.getElementById('ar-btn-label').textContent = selectedAr;
             const t2iResolutions = getResolutionsForModel(selectedModel);
             qualityBtn.style.display = t2iResolutions.length > 0 ? 'flex' : 'none';
@@ -196,11 +202,14 @@ export function ImageStudio() {
         return btn;
     };
 
+    const initialModelLabel = useLocalModel
+        ? (getLocalModelById(selectedLocalModel)?.name || selectedModelName)
+        : selectedModelName;
     const modelBtn = createControlBtn(`
         <div class="w-5 h-5 bg-primary rounded-md flex items-center justify-center shadow-lg shadow-primary/20">
             <span class="text-[10px] font-black text-black">G</span>
         </div>
-    `, selectedModelName, 'model-btn', t('image.modelTooltip'));
+    `, initialModelLabel, 'model-btn', t('image.modelTooltip'));
 
     const arBtn = createControlBtn(`
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="opacity-60 text-secondary"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
@@ -231,13 +240,7 @@ export function ImageStudio() {
             useLocalModel = !useLocalModel;
             if (useLocalModel) {
                 await refreshDownloadedModels();
-                // Auto-select first downloaded model, or fallback to first in catalog
-                const available = LOCAL_IMAGE_MODELS.filter(m =>
-                    m.provider === 'wan2gp' || downloadedModelIds.has(m.id)
-                );
-                if (available.length > 0 && !downloadedModelIds.has(selectedLocalModel)) {
-                    selectedLocalModel = available[0].id;
-                }
+                // Always keep the currently-selected local model, or fallback
                 const lm = getLocalModelById(selectedLocalModel);
                 if (lm) document.getElementById('model-btn-label').textContent = lm.name;
             } else {
@@ -295,17 +298,33 @@ export function ImageStudio() {
             <span class="text-xs font-bold text-white/60">${t('image.generatingLocally')}</span>
             <span id="local-progress-pct" class="text-xs font-bold text-primary">0%</span>
         </div>
+        <div id="local-progress-info" class="flex items-center gap-3 text-[10px] text-muted">
+            <span id="local-progress-elapsed">Elapsed: 0s</span>
+            <span id="local-progress-step">Step: --/--</span>
+            <span id="local-progress-phase">Phase: waiting</span>
+        </div>
         <div class="h-1.5 rounded-full bg-white/10 overflow-hidden">
             <div id="local-progress-fill" class="h-full bg-primary transition-all duration-200" style="width:0%"></div>
+        </div>
+        <div id="local-progress-warning" class="hidden flex items-center gap-1.5 text-[10px] text-yellow-400">
+            <span>⚠️</span>
+            <span>Generation will auto-cancel after 10 minutes to prevent hanging.</span>
         </div>
         <div class="flex justify-end">
             <button id="local-cancel-btn" class="text-xs text-red-400 hover:text-red-300 transition-colors">${t('common.cancel')}</button>
         </div>
     `;
     container.appendChild(localProgressWrap);
+    const localProgressElapsed = localProgressWrap.querySelector('#local-progress-elapsed');
+    const localProgressStep = localProgressWrap.querySelector('#local-progress-step');
+    const localProgressPhase = localProgressWrap.querySelector('#local-progress-phase');
+    const localProgressWarning = localProgressWrap.querySelector('#local-progress-warning');
+    let progressTimer = null;
 
     localProgressWrap.querySelector('#local-cancel-btn')?.addEventListener('click', () => {
         localAI.cancelGeneration();
+        if (progressTimer) clearInterval(progressTimer);
+        progressTimer = null;
         localProgressWrap.classList.remove('flex');
         localProgressWrap.classList.add('hidden');
         generateBtn.disabled = false;
@@ -753,17 +772,13 @@ export function ImageStudio() {
                 list.innerHTML = '';
 
                 if (useLocalModel) {
-                    // ── Local model list: show downloaded sd.cpp + all Wan2GP ───
+                    // ── Local model list: show all image-capable models ─────────
                     const filtered = LOCAL_IMAGE_MODELS.filter(m =>
-                        (m.provider === 'wan2gp' || downloadedModelIds.has(m.id)) &&
-                        (m.name.toLowerCase().includes(filter.toLowerCase()) ||
-                         m.id.toLowerCase().includes(filter.toLowerCase()))
+                        m.name.toLowerCase().includes(filter.toLowerCase()) ||
+                        m.id.toLowerCase().includes(filter.toLowerCase())
                     );
                     if (filtered.length === 0) {
-                        const hasDownloads = [...downloadedModelIds].some(id => LOCAL_MODEL_CATALOG.find(m => m.id === id));
-                        list.innerHTML = hasDownloads
-                            ? `<div class="text-xs text-muted text-center py-4">${t('common.noResults')}</div>`
-                            : `<div class="text-xs text-muted text-center py-4 px-2">No local models downloaded yet. Go to Settings → Local Models to download one.</div>`;
+                        list.innerHTML = `<div class="text-xs text-muted text-center py-4">${t('common.noResults')}</div>`;
                         return;
                     }
                     filtered.forEach(m => {
@@ -962,6 +977,7 @@ export function ImageStudio() {
     // History sidebar
     const historySidebar = document.createElement('div');
     historySidebar.className = 'fixed right-0 top-0 h-full w-20 md:w-24 bg-black/60 backdrop-blur-xl border-l border-white/5 z-50 flex flex-col items-center py-4 gap-3 overflow-y-auto transition-all duration-500 translate-x-full opacity-0';
+    historySidebar.style.paddingTop = '80px';
     historySidebar.id = 'history-sidebar';
 
     const historyLabel = document.createElement('div');
@@ -1048,6 +1064,9 @@ export function ImageStudio() {
             thumb.innerHTML = `
                 <img src="${entry.url}" alt="${entry.prompt?.substring(0, 30) || 'Generated'}" class="w-full aspect-square object-cover">
                 <div class="absolute inset-0 bg-black/60 opacity-0 group-hover/thumb:opacity-100 transition-opacity flex items-center justify-center gap-1">
+                    <button class="hist-delete p-1.5 bg-red-500/80 rounded-lg text-white hover:scale-110 transition-transform" title="删除">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
                     <button class="hist-download p-1.5 bg-primary rounded-lg text-black hover:scale-110 transition-transform" title="Download">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
                     </button>
@@ -1055,6 +1074,16 @@ export function ImageStudio() {
             `;
 
             thumb.onclick = (e) => {
+                if (e.target.closest('.hist-delete')) {
+                    generationHistory.splice(idx, 1);
+                    localStorage.setItem('muapi_history', JSON.stringify(generationHistory.slice(0, 50)));
+                    renderHistory();
+                    if (generationHistory.length === 0) {
+                        historySidebar.classList.add('translate-x-full', 'opacity-0');
+                        historySidebar.classList.remove('translate-x-0', 'opacity-100');
+                    }
+                    return;
+                }
                 if (e.target.closest('.hist-download')) {
                     downloadImage(entry.url, `muapi-${entry.id || idx}.jpg`);
                     return;
@@ -1167,8 +1196,10 @@ export function ImageStudio() {
         imageMode = false;
         selectedModel = t2iModels[0].id;
         selectedModelName = t2iModels[0].name;
-        selectedAr = getAspectRatiosForModel(selectedModel)[0];
-        document.getElementById('model-btn-label').textContent = selectedModelName;
+        selectedAr = (useLocalModel ? getLocalModelById(selectedLocalModel)?.aspectRatios : getAspectRatiosForModel(selectedModel))?.[0] || '1:1';
+        document.getElementById('model-btn-label').textContent = useLocalModel
+            ? (getLocalModelById(selectedLocalModel)?.name || selectedModelName)
+            : selectedModelName;
         document.getElementById('ar-btn-label').textContent = selectedAr;
         const resetResolutions = getResolutionsForModel(selectedModel);
         qualityBtn.style.display = resetResolutions.length > 0 ? 'flex' : 'none';
@@ -1208,13 +1239,38 @@ export function ImageStudio() {
             const progressPct = document.getElementById('local-progress-pct');
             progressWrap.classList.remove('hidden');
             progressWrap.classList.add('flex');
+            // Show warning after 6 minutes
+            let warningShown = false;
 
-            const unsub = localAI.onProgress(({ progress, status, message }) => {
+            const startTime = Date.now();
+            if (progressTimer) clearInterval(progressTimer);
+            progressTimer = setInterval(() => {
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                const min = Math.floor(elapsed / 60);
+                const sec = elapsed % 60;
+                if (localProgressElapsed) localProgressElapsed.textContent = `Elapsed: ${min > 0 ? `${min}m ` : ''}${sec}s`;
+                if (elapsed >= 360 && !warningShown) {
+                    localProgressWarning?.classList.remove('hidden');
+                    warningShown = true;
+                }
+            }, 1000);
+
+            const unsub = localAI.onProgress(({ progress, status, message, step, totalSteps }) => {
                 const pct = Math.round((progress ?? 0) * 100);
                 const label = message || (status === 'starting' ? 'Starting...' : `${pct}%`);
                 if (progressFill) progressFill.style.width = `${pct}%`;
                 if (progressPct) progressPct.textContent = label;
                 generateBtn.innerHTML = `<span class="animate-spin inline-block mr-2 text-black">◌</span> ${label}`;
+                // Phase info
+                if (status === 'starting') {
+                    if (localProgressStep) localProgressStep.textContent = 'Step: --/--';
+                    if (localProgressPhase) localProgressPhase.textContent = message || 'Phase: loading model';
+                } else if (status === 'generating') {
+                    if (step !== undefined && totalSteps) localProgressStep.textContent = `Step: ${step}/${totalSteps}`;
+                    if (localProgressPhase) localProgressPhase.textContent = 'Phase: sampling';
+                } else if (status === 'done') {
+                    if (localProgressPhase) localProgressPhase.textContent = 'Phase: done';
+                }
             });
 
             let hadError = false;
@@ -1229,6 +1285,8 @@ export function ImageStudio() {
                     seed,
                 });
                 unsub();
+                if (progressTimer) clearInterval(progressTimer);
+                progressTimer = null;
                 progressWrap.classList.replace('flex', 'hidden');
                 progressWrap.classList.add('hidden');
 
@@ -1249,6 +1307,8 @@ export function ImageStudio() {
             } catch (e) {
                 hadError = true;
                 unsub();
+                if (progressTimer) clearInterval(progressTimer);
+                progressTimer = null;
                 progressWrap.classList.add('hidden');
                 console.error('[Local] generation error:', e);
                 hero.classList.remove('opacity-0', 'scale-95', '-translate-y-10', 'pointer-events-none');

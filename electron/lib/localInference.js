@@ -469,6 +469,19 @@ async function generate(params, mainWindow) {
         '-v',
     ];
 
+    // ── Performance optimizations ─────────────────────────────────────────
+    // Flash attention provides ~2-3x speedup on Apple Silicon Metal
+    args.push('--diffusion-fa');
+    // Use all available CPU cores
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+        args.push('-t', '8');
+    }
+    // Load weights as f16 on Apple Silicon (halves memory bandwidth)
+    if (process.platform === 'darwin' && process.arch === 'arm64') {
+        args.push('--type', 'f16');
+    }
+
+    // ── Model-specific parameters ─────────────────────────────────────────
     if (params.negative_prompt) {
         args.push('-n', params.negative_prompt);
     }
@@ -478,9 +491,12 @@ async function generate(params, mainWindow) {
         const vaePath = path.join(MODELS_DIR, ZIMAGE_AUXILIARY.vae.filename);
         args.push('--llm', llmPath);
         args.push('--vae', vaePath);
+        // EasyCache: skip redundant computation in DiT models (3-5x speed for later steps)
+        args.push('--cache-mode', 'easycache', '--cache-option', 'threshold=0.25,warmup=4');
         if (model.scheduler) args.push('--scheduler', model.scheduler);
     } else if (model.type === 'sdxl') {
         args.push('--sd-version', 'sdxl');
+        args.push('--vae-tiling');
     } else if (model.type === 'sd2') {
         args.push('--sd-version', 'sd2');
     } else if (model.type === 'flux') {
@@ -491,6 +507,19 @@ async function generate(params, mainWindow) {
         const startupStartedAt = Date.now();
         let startupHeartbeat = null;
         let samplingStarted = false;
+        let timedOut = false;
+
+        // ── 10-minute total timeout ─────────────────────────────────────────
+        const GENERATION_TIMEOUT_MS = 600_000;
+        const timeoutHandle = setTimeout(() => {
+            timedOut = true;
+            stopStartupHeartbeat();
+            if (activeProcess) {
+                activeProcess.kill('SIGTERM');
+                activeProcess = null;
+            }
+            reject(new Error(`Generation timed out after ${Math.round(GENERATION_TIMEOUT_MS / 1000 / 60)} minutes. The model took too long to load or generate — try a smaller model (e.g. Dreamshaper 8) or reduce resolution.`));
+        }, GENERATION_TIMEOUT_MS);
 
         const sendStartupProgress = () => {
             send({
@@ -535,8 +564,10 @@ async function generate(params, mainWindow) {
         activeProcess.stderr.on('data', handleOutput);
 
         activeProcess.on('close', (code) => {
+            clearTimeout(timeoutHandle);
             stopStartupHeartbeat();
             activeProcess = null;
+            if (timedOut) return;
             const allOutput = outputLines.filter(l => l.trim()).join('\n');
             console.error('[sd-cli] full output:\n' + allOutput);
             if (code !== 0) {
@@ -564,9 +595,10 @@ async function generate(params, mainWindow) {
         });
 
         activeProcess.on('error', (err) => {
+            clearTimeout(timeoutHandle);
             stopStartupHeartbeat();
             activeProcess = null;
-            reject(err);
+            if (!timedOut) reject(err);
         });
     });
 }
