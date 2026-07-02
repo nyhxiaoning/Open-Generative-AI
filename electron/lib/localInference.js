@@ -469,7 +469,7 @@ async function generate(params, mainWindow) {
         '-v',
     ];
 
-    // ── Performance optimizations ─────────────────────────────────────────
+    // ── Performance & Memory optimizations ────────────────────────────────
     // Flash attention provides ~2-3x speedup on Apple Silicon Metal
     args.push('--diffusion-fa');
     // Use all available CPU cores
@@ -479,6 +479,10 @@ async function generate(params, mainWindow) {
     // Load weights as f16 on Apple Silicon (halves memory bandwidth)
     if (process.platform === 'darwin' && process.arch === 'arm64') {
         args.push('--type', 'f16');
+    }
+    // VAE tiling processes the decoder in tiles — reduces peak memory during VAE decode
+    if (model.type !== 'z-image') {
+        args.push('--vae-tiling');
     }
 
     // ── Model-specific parameters ─────────────────────────────────────────

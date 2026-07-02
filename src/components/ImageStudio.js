@@ -976,8 +976,7 @@ export function ImageStudio() {
 
     // History sidebar
     const historySidebar = document.createElement('div');
-    historySidebar.className = 'fixed right-0 top-0 h-full w-20 md:w-24 bg-black/60 backdrop-blur-xl border-l border-white/5 z-50 flex flex-col items-center py-4 gap-3 overflow-y-auto transition-all duration-500 translate-x-full opacity-0';
-    historySidebar.style.paddingTop = '80px';
+    historySidebar.className = 'fixed right-0 top-16 h-[calc(100vh-64px)] w-20 md:w-24 bg-black/60 backdrop-blur-xl border-l border-white/5 z-40 flex flex-col items-center py-4 gap-3 overflow-y-auto transition-all duration-500 translate-x-full opacity-0';
     historySidebar.id = 'history-sidebar';
 
     const historyLabel = document.createElement('div');
